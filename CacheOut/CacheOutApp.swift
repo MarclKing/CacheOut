@@ -14,6 +14,7 @@ struct CacheOutApp: App {
     @State private var achievementStore = AchievementStore()
     @State private var tabRouter = TabRouter()
     @State private var appSettingsStore = AppSettingsStore()
+    @State private var compressionStore = CompressionStore()
 
     // Aufgeteilt in zwei Flags, damit die LoadingView IMMER komplett
     // durchläuft — egal ob die Foto-Daten schneller oder langsamer fertig
@@ -66,6 +67,7 @@ struct CacheOutApp: App {
             .environment(achievementStore)
             .environment(tabRouter)
             .environment(appSettingsStore)
+            .environment(compressionStore)
             .preferredColorScheme(themeManager.isDarkMode ? .dark : .light)
             .task {
                 await photoService.requestAccess()
@@ -82,6 +84,10 @@ struct CacheOutApp: App {
                 // wird. Läuft einfach weiter, während der Nutzer schon auf
                 // dem ersten Tab ist; bis er zu "Nützliches" wechselt, sind
                 // die Bilder in aller Regel längst da.
+                // Große Dateien im Hintergrund suchen (für "Bildkomprimierung")
+                Task { @MainActor in
+                    compressionStore.scanIfNeeded(photoService: photoService)
+                }
                 Task.detached(priority: .utility) { [photoService, nuetzlichesPreviewCache] in
                     await nuetzlichesPreviewCache.preload(photoService: photoService)
                 }

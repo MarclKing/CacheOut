@@ -35,5 +35,6 @@ class AppSettingsStore {
         // Datensparmodus & reduzierte Bewegung: Standard AUS
         dataSaverEnabled = UserDefaults.standard.bool(forKey: dataSaverKey)
         reducedSwipeMotionEnabled = UserDefaults.standard.bool(forKey: reducedMotionKey)
+
     }
 }

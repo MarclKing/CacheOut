@@ -272,7 +272,7 @@ struct UnifiedDeleteConfirmSheet: View {
         } label: {
             VStack(spacing: 1) {
                 Label("\(remainingCount) löschen", systemImage: "trash.fill")
-                    .font(.subheadline.weight(.medium))
+                    .font(.subheadline.weight(.semibold))
                 if let sizeText = remainingSizeText {
                     Text(sizeText)
                         .font(.caption2)
@@ -283,7 +283,7 @@ struct UnifiedDeleteConfirmSheet: View {
             .frame(height: 34)
             .padding(.vertical, 2)
         }
-        .buttonStyle(.glass)
+        .buttonStyle(.glassProminent)
         .tint(AppTheme.deleteRed)
         .controlSize(.regular)
         .disabled(remainingCount == 0)

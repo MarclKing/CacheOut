@@ -36,7 +36,10 @@ struct SwipeDeckView: View {
 
     @State private var pendingAction: SwipeAction?
     @State private var previewItem: QuickLookItem?
+    @State private var previewImage: UIImage?
+    @State private var isPreviewImageZoomed = false   // NEU
     @State private var isPreparingPreview = false
+    @State private var previewPlaceholderImage: UIImage?
     @State private var topSafeAreaInset: CGFloat = 0
     
     @State private var deckHeight: CGFloat = 0
@@ -44,7 +47,7 @@ struct SwipeDeckView: View {
     @State private var bottomBarTopY: CGFloat = 0
 
     @State private var preloadedPreviewURLs: [String: URL] = [:]
-    @State private var preloadingPreviewAssetId: String?
+    @State private var preloadingPreviewAssetIds: Set<String> = []
 
     @State private var previewDragOffset: CGSize = .zero
     @State private var previewDragScale: CGFloat = 1
@@ -133,16 +136,23 @@ struct SwipeDeckView: View {
     }
 
     private func preloadPreviewIfNeeded() {
-        guard let asset = remainingAssets.first else { return }
+        if let asset = remainingAssets.first {
+            preloadPreview(for: asset)
+        }
+    }
+
+    private func preloadPreview(for asset: PHAsset) {
         let assetId = asset.localIdentifier
-        guard preloadedPreviewURLs[assetId] == nil, preloadingPreviewAssetId != assetId else { return }
-        preloadingPreviewAssetId = assetId
+        guard preloadedPreviewURLs[assetId] == nil,
+              !preloadingPreviewAssetIds.contains(assetId) else { return }
+        preloadingPreviewAssetIds.insert(assetId)
 
         Task {
             let url = await photoService.exportToTemporaryURL(for: asset)
             await MainActor.run {
+                preloadingPreviewAssetIds.remove(assetId)
                 guard let url else { return }
-                guard remainingAssets.first?.localIdentifier == assetId || nextAsset?.localIdentifier == assetId else {
+                guard remainingAssets.prefix(2).map(\.localIdentifier).contains(assetId) else {
                     try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
                     return
                 }
@@ -237,17 +247,54 @@ struct SwipeDeckView: View {
             }
             preloadedPreviewURLs = [:]
         }
-        .fullScreenCover(item: $previewItem, onDismiss: { cleanupPreviewFile() }) { item in
+        .fullScreenCover(item: Binding(
+            get: { previewImage.map { IdentifiableImage(image: $0) } },
+            set: { previewImage = $0?.image }
+        )) { wrapped in
             NavigationStack {
-                QuickLookPreview(item: item)
-                    .ignoresSafeArea()
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("Fertig") {
-                                previewItem = nil   // GEÄNDERT (war: cleanupPreviewFile() davor + previewItem = nil)
-                            }
+                ZStack {
+                    Color.black.ignoresSafeArea()
+                    ZoomableImageView(image: wrapped.image, isZoomed: $isPreviewImageZoomed)
+                }
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Fertig") {
+                            previewImage = nil
                         }
                     }
+                }
+            }
+            .offset(y: previewDragOffset.height)
+            .scaleEffect(previewDragScale)
+            .gesture(closeGesture)
+            .onTapGesture(count: 2) {
+                // schon von ZoomableImageView selbst behandelt (Zoom-Toggle)
+            }
+        }
+        .fullScreenCover(item: $previewItem, onDismiss: {
+            cleanupPreviewFile()
+            previewPlaceholderImage = nil
+        }) { item in
+            NavigationStack {
+                ZStack {
+                    if let placeholder = previewPlaceholderImage {
+                        Image(uiImage: placeholder)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .ignoresSafeArea()
+                    } else {
+                        Color.black.ignoresSafeArea()
+                    }
+                    QuickLookPreview(item: item)
+                        .ignoresSafeArea()
+                }
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Fertig") {
+                            previewItem = nil
+                        }
+                    }
+                }
             }
             .offset(y: previewDragOffset.height)
             .scaleEffect(previewDragScale)
@@ -267,7 +314,7 @@ struct SwipeDeckView: View {
                         let shouldDismiss = value.translation.height > 140
                             || value.predictedEndTranslation.height > 300
                         if shouldDismiss {
-                            previewItem = nil   // GEÄNDERT (war: cleanupPreviewFile() davor)
+                            previewItem = nil
                             previewDragOffset = .zero
                             previewDragScale = 1
                         } else {
@@ -279,7 +326,7 @@ struct SwipeDeckView: View {
                     }
             )
             .onTapGesture(count: 2) {
-                previewItem = nil   // GEÄNDERT (war: cleanupPreviewFile() davor)
+                previewItem = nil
             }
         }
     }
@@ -289,7 +336,7 @@ struct SwipeDeckView: View {
         guard let url = previewItem?.url else { return }
         let folderURL = url.deletingLastPathComponent()
         preloadedPreviewURLs = preloadedPreviewURLs.filter { $0.value != url }
-        Task.detached(priority: .utility) {   // NEU: Löschen läuft im Hintergrund, blockiert nie die UI
+        Task.detached(priority: .utility) {
             try? FileManager.default.removeItem(at: folderURL)
         }
     }
@@ -297,6 +344,13 @@ struct SwipeDeckView: View {
     // MARK: - QuickLook-Vorschau öffnen
     private func openPreview(for asset: PHAsset) {
         guard !isPreparingPreview else { return }
+
+        if asset.mediaType != .video, let image = loadedImages[asset.localIdentifier] {
+            previewImage = image
+            return
+        }
+
+        previewPlaceholderImage = loadedImages[asset.localIdentifier]
 
         if let cachedURL = preloadedPreviewURLs[asset.localIdentifier] {
             previewItem = QuickLookItem(url: cachedURL)
@@ -312,6 +366,39 @@ struct SwipeDeckView: View {
                 previewItem = QuickLookItem(url: url)
             }
         }
+    }
+
+    // MARK: - Schließen-Geste (immer angehängt, aber nur aktiv wenn nicht gezoomt)
+    private var closeGesture: some Gesture {
+        DragGesture(minimumDistance: 20)
+            .onChanged { value in
+                guard !isPreviewImageZoomed else { return }
+                guard value.translation.height > 0 else { return }
+                previewDragOffset = value.translation
+                previewDragScale = 1 - min(1, value.translation.height / 400) * 0.12
+            }
+            .onEnded { value in
+                guard !isPreviewImageZoomed else {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                        previewDragOffset = .zero
+                        previewDragScale = 1
+                    }
+                    return
+                }
+
+                let shouldDismiss = value.translation.height > 140
+                    || value.predictedEndTranslation.height > 300
+                if shouldDismiss {
+                    previewImage = nil
+                    previewDragOffset = .zero
+                    previewDragScale = 1
+                } else {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                        previewDragOffset = .zero
+                        previewDragScale = 1
+                    }
+                }
+            }
     }
 
     // MARK: - Scrim/Icon-Zonen-Geometrie
@@ -469,7 +556,7 @@ struct SwipeDeckView: View {
                                         openPreview(for: asset)
                                     }
                             )
-                            .onTapGesture(count: 2) {          // NEU: Doppeltipp öffnet die Preview zusätzlich
+                            .onTapGesture(count: 2) {
                                 openPreview(for: asset)
                             }
                     },
@@ -762,7 +849,7 @@ struct SwipeDeckView: View {
                         asset: asset,
                         cornerRadius: 28,
                         bottomInset: 110,
-                        preloadedItem: preloadedVideoItems.removeValue(forKey: asset.localIdentifier),   // GEÄNDERT (war: preloadedVideoItems[asset.localIdentifier])
+                        preloadedItem: preloadedVideoItems.removeValue(forKey: asset.localIdentifier),
                         preloadedPosterImage: currentImage
                     )
                     .id(asset.localIdentifier)
@@ -801,9 +888,6 @@ struct SwipeDeckView: View {
     }
 
     private func checkAchievements() {
-        // NEU: Celebration-Banner komplett entfernt — Fortschritt wird weiterhin
-        // im Hintergrund erfasst (für die Erfolge-Kacheln im Profil-Tab), aber
-        // es fliegt nichts mehr beim Swipen ein.
         _ = achievementStore.checkForNewUnlock(
             swipeStore: swipeStore, stats: deletionStatsStore, streak: streakTracker
         )
@@ -886,4 +970,10 @@ struct SwipeDeckView: View {
         }
         .padding()
     }
+}
+
+// Helper für das Identifiable-Binding von UIImage
+private struct IdentifiableImage: Identifiable {
+    let id = UUID()
+    let image: UIImage
 }

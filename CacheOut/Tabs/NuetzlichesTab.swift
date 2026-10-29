@@ -24,15 +24,47 @@ struct NuetzlichesTab: View {
     @State private var selectedDayOffset = 0
     @State private var selectedFilter: SmartFilterSelection?
     @State private var selectedDayMemory: DayMemory?
+    @State private var duplicateStore = DuplicateStore()
+    @State private var showDuplicates = false
 
     // Beide Listen kommen jetzt aus dem Cache, damit App-Start-Preload
     // und Anzeige garantiert dieselben Einträge/Keys verwenden.
-    private var dayMemories: [DayMemory] { NuetzlichesPreviewCache.dayMemories }
+    private var dayMemories: [DayMemory] {
+        NuetzlichesPreviewCache.dayMemories.filter {
+            !photoService.fetchAssets(filter: .dayAcrossYears(day: $0.day, month: $0.month)).isEmpty
+        }
+    }
     private var smartFilters: [SmartFilterSelection] { NuetzlichesPreviewCache.smartFilters }
+
+    private enum SmartTileItem: Identifiable {
+        case filter(SmartFilterSelection)
+        case duplicates
+
+        var id: String {
+            switch self {
+            case .filter(let f): return "filter-" + f.id
+            case .duplicates: return "duplicates"
+            }
+        }
+    }
+
+    // Screenshots + Duplikate oben nebeneinander, alles andere rutscht nach.
+    private var tileItems: [SmartTileItem] {
+        var rest = smartFilters
+        var result: [SmartTileItem] = []
+        if let idx = rest.firstIndex(where: { $0.title.contains("Screenshots") }) {
+            result.append(.filter(rest.remove(at: idx)))
+        }
+        result.append(.duplicates)
+        result.append(contentsOf: rest.map { SmartTileItem.filter($0) })
+        return result
+    }
 
     private let smartFilterIcons: [String: String] = [
         "Videos": "video.fill",
+        "Nur Videos": "video.fill",
         "Screenshots": "camera.viewfinder",
+        "Nur Screenshots": "camera.viewfinder",
         "Letzte 7 Tage": "calendar.badge.clock",
         "Letzte 31 Tage": "calendar",
         "Favoriten": "star.fill",
@@ -47,6 +79,7 @@ struct NuetzlichesTab: View {
                 VStack(alignment: .leading, spacing: 28) {
                     memoriesSection
                     todayBanner
+                    CompressionSection()
                     smartFilterSection
                 }
                 .padding(.top, 8)
@@ -57,6 +90,13 @@ struct NuetzlichesTab: View {
             .deleteToolbarButton(showDeleteSheet: $showDeleteSheet)
             .navigationDestination(item: $selectedFilter) { selection in
                 FilterSwipeScreen(title: selection.title, filter: selection.filter)
+            }
+            .navigationDestination(isPresented: $showDuplicates) {
+                DuplicateGalleryView()
+                    .environment(duplicateStore)
+            }
+            .onAppear {
+                duplicateStore.scanIfNeeded(photoService: photoService)
             }
             .navigationDestination(item: $selectedDayMemory) { memory in
                 FilterSwipeScreen(
@@ -91,14 +131,22 @@ struct NuetzlichesTab: View {
         min(1, Double(swipeStore.todayCount) / 300)
     }
 
+    @ViewBuilder
     private var memoriesSection: some View {
+        let memories = dayMemories
+        if !memories.isEmpty {
+            memoriesContent(memories)
+        }
+    }
+
+    private func memoriesContent(_ memories: [DayMemory]) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Erinnerungen")
                 .font(.title2).bold()
                 .padding(.horizontal)
 
             TabView(selection: $selectedDayOffset) {
-                ForEach(dayMemories) { memory in
+                ForEach(memories) { memory in
                     DayCollageCard(
                         memory: memory,
                         photoService: photoService,
@@ -116,6 +164,11 @@ struct NuetzlichesTab: View {
             .tabViewStyle(.page(indexDisplayMode: .always))
             .indexViewStyle(.page(backgroundDisplayMode: .always))
             .frame(height: 230)
+            .onAppear {
+                if !memories.contains(where: { $0.offset == selectedDayOffset }), let first = memories.first {
+                    selectedDayOffset = first.offset
+                }
+            }
         }
     }
 
@@ -133,17 +186,26 @@ struct NuetzlichesTab: View {
                 .padding(.horizontal)
 
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
-                ForEach(smartFilters) { filter in
-                    SmartFilterTile(
-                        title: filter.title,
-                        icon: smartFilterIcons[filter.title] ?? "square.grid.2x2",
-                        filter: filter.filter,
-                        photoService: photoService,
-                        previewCache: previewCache
-                    )
-                    .contentShape(RoundedRectangle(cornerRadius: 20))
-                    .onTapGesture {
-                        selectedFilter = filter
+                ForEach(tileItems) { item in
+                    switch item {
+                    case .filter(let filter):
+                        SmartFilterTile(
+                            title: filter.title,
+                            icon: smartFilterIcons[filter.title] ?? "square.grid.2x2",
+                            filter: filter.filter,
+                            photoService: photoService,
+                            previewCache: previewCache
+                        )
+                        .contentShape(RoundedRectangle(cornerRadius: 20))
+                        .onTapGesture {
+                            selectedFilter = filter
+                        }
+                    case .duplicates:
+                        DuplicateTile(store: duplicateStore, photoService: photoService)
+                            .contentShape(RoundedRectangle(cornerRadius: 20))
+                            .onTapGesture {
+                                showDuplicates = true
+                            }
                     }
                 }
             }
@@ -230,11 +292,11 @@ private struct DayCollageCard: View {
         .disabled(assets.isEmpty)
         .clipShape(RoundedRectangle(cornerRadius: 24))
         .task {
-            // Erst Cache checken — beim Normalfall (Preload beim App-Start
-            // war rechtzeitig fertig) ist das sofort da, kein eigener Ladepfad.
-            if let cachedThumbs = previewCache.dayMemoryThumbnails[memory.offset], !cachedThumbs.isEmpty {
+            let fetched = photoService.fetchAssets(filter: .dayAcrossYears(day: memory.day, month: memory.month))
+            assets = fetched
+            if let cachedThumbs = previewCache.dayMemoryThumbnails[memory.offset], !cachedThumbs.isEmpty,
+               (previewCache.dayMemoryAssets[memory.offset]?.count ?? -1) == fetched.count {
                 thumbnails = cachedThumbs
-                assets = previewCache.dayMemoryAssets[memory.offset] ?? []
             } else {
                 loadAssets()
             }
@@ -428,4 +490,5 @@ struct FilterSwipeScreen: View {
         .environment(PhotoLibraryService())
         .environment(SwipeStateStore())
         .environment(NuetzlichesPreviewCache())
+        .environment(CompressionStore())
 }

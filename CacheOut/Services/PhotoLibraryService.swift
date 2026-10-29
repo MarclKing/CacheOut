@@ -17,20 +17,23 @@ class PhotoLibraryService {
     // Verhindert, dass "Nützliches" bei jedem Öffnen 7x die ganze Library scannt
     // (eine Karte pro Erinnerungstag), weil .dayAcrossYears bisher kein
     // NSPredicate hatte und jedes Mal komplett neu enumeriert wurde.
-    private var dayMonthIndexCache: [String: [PHAsset]]?
+    @ObservationIgnored private var dayMonthIndexCache: [String: [PHAsset]]?
+    @ObservationIgnored private var monthIndexCache: [String: [PHAsset]]?   // Schlüssel "jahr-monat"
+    @ObservationIgnored private let cacheLock = NSRecursiveLock()
 
     // NEU: verhindert, dass warmupExportPipelineIfNeeded() mehrfach läuft.
     private var didWarmupExportPipeline = false
 
     // NEU: Caches für Fetches
-    private var allAssetsCache: [PHAsset]?
-    private var assetsByYearCache: [Int: [PHAsset]]?
+    @ObservationIgnored private var allAssetsCache: [PHAsset]?
+    @ObservationIgnored private var assetsByYearCache: [Int: [PHAsset]]?
 
     // NEU: Datensparmodus — deaktiviert automatischen iCloud-Download für
     // Foto-Karten/-Vorschauen. Wird von CacheOutApp aus AppSettingsStore synchronisiert.
     var dataSaverEnabled: Bool = false
 
     private func dayMonthIndex() -> [String: [PHAsset]] {
+        cacheLock.lock(); defer { cacheLock.unlock() }
         if let cached = dayMonthIndexCache { return cached }
         let all = fetchAssets(filter: .all)
         let calendar = Calendar.current
@@ -40,7 +43,23 @@ class PhotoLibraryService {
             let key = "\(calendar.component(.month, from: date))-\(calendar.component(.day, from: date))"
             index[key, default: []].append(asset)
         }
-        dayMonthIndexCache = index
+        if !all.isEmpty { dayMonthIndexCache = index }
+        return index
+    }
+
+    private func monthIndex() -> [String: [PHAsset]] {
+        cacheLock.lock(); defer { cacheLock.unlock() }
+        if let cached = monthIndexCache { return cached }
+        let all = allAssets()
+        let calendar = Calendar.current
+        var index: [String: [PHAsset]] = [:]
+        for asset in all {
+            guard let date = asset.creationDate else { continue }
+            let c = calendar.dateComponents([.year, .month], from: date)
+            guard let y = c.year, let m = c.month else { continue }
+            index["\(y)-\(m)", default: []].append(asset)
+        }
+        if !all.isEmpty { monthIndexCache = index }
         return index
     }
 
@@ -89,18 +108,20 @@ class PhotoLibraryService {
 
     // NEU
     private func allAssets() -> [PHAsset] {
+        cacheLock.lock(); defer { cacheLock.unlock() }
         if let cached = allAssetsCache { return cached }
         let options = PHFetchOptions()
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
         let result = PHAsset.fetchAssets(with: options)
         var assets: [PHAsset] = []
         result.enumerateObjects { asset, _, _ in assets.append(asset) }
-        allAssetsCache = assets
+        if !assets.isEmpty { allAssetsCache = assets }
         return assets
     }
 
     // NEU — für Jahres-Auswertungen (SmartSuggestionEngine, yearItemCounts)
     func assetsGroupedByYear() -> [Int: [PHAsset]] {
+        cacheLock.lock(); defer { cacheLock.unlock() }
         if let cached = assetsByYearCache { return cached }
         var result: [Int: [PHAsset]] = [:]
         for asset in allAssets() {
@@ -108,7 +129,7 @@ class PhotoLibraryService {
             let year = Calendar.current.component(.year, from: date)
             result[year, default: []].append(asset)
         }
-        assetsByYearCache = result
+        if !result.isEmpty { assetsByYearCache = result }
         return result
     }
 
@@ -125,8 +146,14 @@ class PhotoLibraryService {
                 month: calendar.component(.month, from: today),
                 excludingYear: calendar.component(.year, from: today)
             )
+        case .month(let year, let month):
+            return monthIndex()["\(year)-\(month)"] ?? []
+        case .yearAll(let year):
+            return assetsGroupedByYear()[year] ?? []
         case .dayAcrossYears(let day, let month):
-            return assetsForDay(day, month: month)
+            // Erinnerungen = dieser Tag in früheren Jahren; das laufende Jahr zählt nicht.
+            return assetsForDay(day, month: month,
+                                excludingYear: Calendar.current.component(.year, from: Date()))
         case .all:
             return allAssets()   // NEU: gecacht statt bei jedem Aufruf neu enumeriert
         default:
@@ -222,6 +249,15 @@ class PhotoLibraryService {
 
     // Jahre + Monate für "Mein Leben"-Übersicht
     func availableYearsAndMonths() -> [Int: Set<Int>] {
+        var result: [Int: Set<Int>] = [:]
+        for key in monthIndex().keys {
+            let parts = key.split(separator: "-").compactMap { Int($0) }
+            if parts.count == 2 { result[parts[0], default: []].insert(parts[1]) }
+        }
+        return result
+    }
+
+    private func availableYearsAndMonthsLegacy() -> [Int: Set<Int>] {
         let assets = fetchAssets(filter: .all)
         var result: [Int: Set<Int>] = [:]
         for asset in assets {
@@ -258,6 +294,15 @@ class PhotoLibraryService {
             .map { $0 }
     }
 
+    // NEU: nach Änderungen außerhalb von deleteAssets (z. B. Komprimierung) aufrufen
+    func invalidateLibraryCaches() {
+        cacheLock.lock(); defer { cacheLock.unlock() }
+        dayMonthIndexCache = nil
+        monthIndexCache = nil
+        allAssetsCache = nil
+        assetsByYearCache = nil
+    }
+
     // MARK: - Delete
     func deleteAssets(_ assets: [PHAsset]) async throws {
         try await PHPhotoLibrary.shared().performChanges {
@@ -265,6 +310,7 @@ class PhotoLibraryService {
         }
         // Index enthält jetzt gelöschte Assets — beim nächsten Zugriff neu bauen.
         dayMonthIndexCache = nil
+        monthIndexCache = nil
         allAssetsCache = nil        // NEU
         assetsByYearCache = nil     // NEU
     }

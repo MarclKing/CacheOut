@@ -38,9 +38,11 @@ struct FileSwipeTab: View {
                     }
                 }
             }
-            .deleteToolbarButton(showDeleteSheet: $showDeleteSheet) {
-                changeFolderButton
-            }
+            .deleteToolbarButton(
+                showDeleteSheet: $showDeleteSheet,
+                leadingIcon: "folder.badge.gearshape",
+                leadingAction: { showDocumentPicker = true }
+            )
             .sheet(isPresented: $showDeleteSheet) {
                 UnifiedDeleteConfirmSheet()
             }

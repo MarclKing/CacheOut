@@ -8,6 +8,10 @@ final class DeleteBadgeWindowManager {
     private var photoHostingController: UIHostingController<DeleteBadgeOverlayContent>?
     private var fileHostingController: UIHostingController<DeleteBadgeOverlayContent>?
     private var buttonHostingController: UIHostingController<DeleteButtonOverlayContent>?
+    private var leadingHostingController: UIHostingController<GlassCircleButtonContent>?
+    private var leadingOnTap: (() -> Void)?
+    private var leadingIcon: String?
+    private var lastKnownLeadingFrame: CGRect = .zero
     private var currentOnTap: (() -> Void)?
 
     // Rot, oben-links vom Button = Fotos. Blau, oben-rechts = Dateien.
@@ -74,7 +78,7 @@ final class DeleteBadgeWindowManager {
         hide()
     }
 
-    func update(photoCount: Int, fileCount: Int, buttonFrame: CGRect, onTap: @escaping () -> Void, in window: UIWindow) {
+    func update(photoCount: Int, fileCount: Int, buttonFrame: CGRect, onTap: @escaping () -> Void, leading: LeadingButtonSpec? = nil, in window: UIWindow) {
         // Jeder erfolgreiche update()-Aufruf heißt: irgendein Screen will das
         // Badge JETZT zeigen — ein evtl. geplantes Verstecken ist dann obsolet.
         updateToken &+= 1
@@ -93,6 +97,7 @@ final class DeleteBadgeWindowManager {
         // den Badges liegen, damit updateBadge() sie via bringSubviewToFront
         // korrekt darüber legt.
         updateButtonOverlay(buttonFrame: frame, in: window)
+        updateLeadingOverlay(leading, in: window)
 
         updateBadge(
             count: photoCount,
@@ -110,6 +115,90 @@ final class DeleteBadgeWindowManager {
             buttonFrame: frame,
             in: window
         )
+    }
+
+    struct LeadingButtonSpec {
+        let icon: String
+        let frame: CGRect
+        let onTap: () -> Void
+    }
+
+    // Zweiter Button (z. B. Ordner wechseln): persistentes Glas-Overlay,
+    // wird beim Erscheinen mit Spring eingeblendet und beim Verlassen
+    // (Screen ohne leading) sanft ausgeblendet.
+    private func updateLeadingOverlay(_ spec: LeadingButtonSpec?, in window: UIWindow) {
+        guard let spec else {
+            hideLeading(animated: true)
+            return
+        }
+        let frame = spec.frame == .zero ? lastKnownLeadingFrame : spec.frame
+        guard frame != .zero else {
+            hideLeading(animated: true)
+            return
+        }
+        lastKnownLeadingFrame = frame
+        leadingOnTap = spec.onTap
+
+        let controller: UIHostingController<GlassCircleButtonContent>
+        if let existing = leadingHostingController {
+            controller = existing
+            if leadingIcon != spec.icon {
+                existing.rootView = GlassCircleButtonContent(icon: spec.icon) { [weak self] in self?.leadingOnTap?() }
+            }
+        } else {
+            controller = UIHostingController(
+                rootView: GlassCircleButtonContent(icon: spec.icon) { [weak self] in self?.leadingOnTap?() }
+            )
+            controller.view.backgroundColor = .clear
+            controller.view.isHidden = true
+            controller.view.alpha = 0
+            window.addSubview(controller.view)
+            leadingHostingController = controller
+        }
+        leadingIcon = spec.icon
+
+        let view: UIView = controller.view
+        if view.superview !== window { window.addSubview(view) }
+        // bounds + center statt frame, weil während der Animation ein transform aktiv ist
+        view.bounds = CGRect(origin: .zero, size: frame.size)
+        view.center = CGPoint(x: frame.midX, y: frame.midY)
+
+        let wasHidden = view.isHidden || view.alpha == 0
+        if wasHidden {
+            view.isHidden = false
+            view.alpha = 0
+            view.transform = CGAffineTransform(scaleX: 0.4, y: 0.4)
+            UIView.animate(
+                withDuration: 0.5, delay: 0.1,
+                usingSpringWithDamping: 0.7, initialSpringVelocity: 0.5,
+                options: [.allowUserInteraction]
+            ) {
+                view.alpha = 1
+                view.transform = .identity
+            }
+        }
+        window.bringSubviewToFront(view)
+    }
+
+    private func hideLeading(animated: Bool) {
+        guard let view = leadingHostingController?.view else { return }
+        guard !view.isHidden, view.alpha > 0 else { return }
+        if animated {
+            view.alpha = 0
+            UIView.animate(withDuration: 0.2, delay: 0, options: [.allowUserInteraction]) {
+                view.transform = CGAffineTransform(scaleX: 0.6, y: 0.6)
+            } completion: { _ in
+                if view.alpha == 0 {
+                    view.isHidden = true
+                    view.transform = .identity
+                }
+            }
+        } else {
+            view.layer.removeAllAnimations()
+            view.alpha = 0
+            view.isHidden = true
+            view.transform = .identity
+        }
     }
 
     private enum Anchor {
@@ -193,6 +282,7 @@ final class DeleteBadgeWindowManager {
         photoHostingController?.view.isHidden = true
         fileHostingController?.view.isHidden = true
         buttonHostingController?.view.isHidden = true
+        hideLeading(animated: false)
     }
 }
 
@@ -228,12 +318,30 @@ struct DeleteButtonOverlayContent: View {
     var body: some View {
         Button(action: onTap) {
             Image(systemName: "trash.fill")
-                .font(.system(size: 16, weight: .medium))
+                .font(.system(size: 19, weight: .medium))
                 .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .contentShape(Rectangle())
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .background(.ultraThinMaterial, in: Circle())
+        .glassEffect(.regular.interactive(), in: .circle)
+    }
+}
+
+// Glas-Button für beliebige SF-Symbols (Overlay im Window).
+struct GlassCircleButtonContent: View {
+    let icon: String
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            Image(systemName: icon)
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: .circle)
     }
 }

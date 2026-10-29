@@ -10,11 +10,14 @@ struct DataManagementSettingsView: View {
     @Environment(NuetzlichesPreviewCache.self) private var nuetzlichesPreviewCache
     @Environment(MeinLebenPreviewCache.self) private var meinLebenPreviewCache
     @Environment(PhotoLibraryService.self) private var photoService
+    @Environment(AppSettingsStore.self) private var appSettings
 
     @State private var showResetConfirm = false
     @State private var isClearingCache = false
 
     var body: some View {
+        @Bindable var appSettings = appSettings
+
         ScrollView {
             VStack(spacing: 24) {
                 SettingsSection(title: "Bisher gelöscht") {

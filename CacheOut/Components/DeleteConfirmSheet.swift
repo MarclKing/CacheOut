@@ -66,6 +66,14 @@ struct PhotoDeleteContent: View {
                         .onTapGesture {
                             toggleExclude(asset.localIdentifier)
                         }
+                        .assetPeek(asset: asset, photoService: photoService) {
+                            Button {
+                                toggleExclude(asset.localIdentifier)
+                            } label: {
+                                Label(excludedIds.contains(asset.localIdentifier) ? "Doch löschen" : "Behalten",
+                                      systemImage: excludedIds.contains(asset.localIdentifier) ? "trash" : "arrow.uturn.backward")
+                            }
+                        }
                     }
                 }
                 .padding(.horizontal)
@@ -203,6 +211,7 @@ private struct ThumbnailCell: View {
                 .padding(6)
         }
         .aspectRatio(1, contentMode: .fit)
+        .contentShape(RoundedRectangle(cornerRadius: 12))   // Tap-Fläche = Zelle (Bild ragt sonst in Nachbarzelle)
         .task {
             image = await photoService.loadImage(for: asset, targetSize: CGSize(width: 200, height: 200))
         }

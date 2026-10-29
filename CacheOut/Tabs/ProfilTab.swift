@@ -76,8 +76,6 @@ struct ProfilTab: View {
                     } label: {
                         Image(systemName: "gearshape.fill")
                             .font(.system(size: 18, weight: .medium))
-                            .frame(width: 36, height: 36)
-                            .glassEffect()
                     }
                 }
             }

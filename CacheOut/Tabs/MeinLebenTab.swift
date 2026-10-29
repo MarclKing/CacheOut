@@ -475,6 +475,7 @@ private struct MonthTile: View {
 
     @State private var previewImage: UIImage?
     @State private var isSorted = false
+    private static let previewMemory = NSCache<NSString, UIImage>()
 
     private var monthName: String {
         let formatter = DateFormatter()
@@ -486,7 +487,7 @@ private struct MonthTile: View {
         GeometryReader { geo in
             ZStack(alignment: .bottomLeading) {
                 RoundedRectangle(cornerRadius: 14)
-                    .fill(hasContent ? AnyShapeStyle(.ultraThinMaterial) : AnyShapeStyle(Color.white.opacity(0.06)))
+                    .fill(Color.white.opacity(hasContent ? 0.08 : 0.06))
 
                 if let previewImage {
                     Image(uiImage: previewImage)
@@ -529,14 +530,16 @@ private struct MonthTile: View {
         .aspectRatio(1, contentMode: .fit)
         .task {
             guard hasContent else { return }
-            if let cachedPreview {
-                previewImage = cachedPreview
-            }
+            let key = "\(year)-\(month)" as NSString
+            if previewImage == nil, let mem = Self.previewMemory.object(forKey: key) { previewImage = mem }
+            if previewImage == nil, let cachedPreview { previewImage = cachedPreview }
             let assets = photoService.fetchAssets(filter: .month(year: year, month: month))
-            if previewImage == nil, let first = assets.first {
-                previewImage = await photoService.loadImage(for: first, targetSize: CGSize(width: 150, height: 150))
-            }
             isSorted = !assets.isEmpty && assets.allSatisfy { swipeStore.hasBeenSwiped($0.localIdentifier) }
+            if previewImage == nil, let first = assets.first {
+                let image = await photoService.loadImage(for: first, targetSize: CGSize(width: 150, height: 150))
+                if let image { Self.previewMemory.setObject(image, forKey: key) }
+                previewImage = image
+            }
         }
     }
 }
