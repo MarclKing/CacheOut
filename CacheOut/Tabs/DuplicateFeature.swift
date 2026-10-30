@@ -113,7 +113,7 @@ final class DuplicateStore {
         hasScanned = true
     }
 
-    func merge(_ selectedIds: Set<String>, photoService: PhotoLibraryService) async {
+    func merge(_ selectedIds: Set<String>, photoService: PhotoLibraryService, statsStore: DeletionStatsStore, swipeStore: SwipeStateStore) async {
         guard !isWorking, !selectedIds.isEmpty else { return }
         isWorking = true
         lastMessage = nil
@@ -201,6 +201,11 @@ final class DuplicateStore {
             return
         }
 
+        let removedPhotos = toDelete.filter { $0.mediaType == .image }.count
+        let removedVideos = toDelete.count - removedPhotos
+        statsStore.recordDeletion(photosCount: removedPhotos, videosCount: removedVideos, bytes: freedBytes)
+        swipeStore.forget(removedIds)
+
         groups = groups.compactMap { group in
             let rest = group.duplicates.filter { !removedIds.contains($0.localIdentifier) }
             guard !rest.isEmpty else { return nil }
@@ -284,6 +289,8 @@ struct DuplicateGalleryView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(DuplicateStore.self) private var store
     @Environment(PhotoLibraryService.self) private var photoService
+    @Environment(DeletionStatsStore.self) private var statsStore
+    @Environment(SwipeStateStore.self) private var swipeStore
 
     private nonisolated enum Kind: Hashable, Sendable { case photos, videos }
 
@@ -523,7 +530,7 @@ struct DuplicateGalleryView: View {
     private func run() {
         let ids = selection
         selection.removeAll()
-        Task { await store.merge(ids, photoService: photoService) }
+        Task { await store.merge(ids, photoService: photoService, statsStore: statsStore, swipeStore: swipeStore) }
     }
 }
 

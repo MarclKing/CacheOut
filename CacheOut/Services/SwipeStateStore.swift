@@ -196,6 +196,25 @@ class SwipeStateStore {
         persist()
     }
 
+    // Komprimierung: neues Asset erbt den Status des Originals, ohne Zaehler/Streaks
+    func transferState(from oldId: String, to newId: String) {
+        let wasSwiped = swipedIds.contains(oldId)
+        let wasQueued = deleteQueueIds.contains(oldId)
+        swipedIds.remove(oldId)
+        deleteQueueIds.removeAll { $0 == oldId }
+        if lastSwipedId == oldId { lastSwipedId = nil }
+        if wasSwiped { swipedIds.insert(newId) }
+        if wasQueued { deleteQueueIds.append(newId) }
+        persist()
+    }
+
+    // Zusammenfuehren: geloeschte Kopien nur aus der Loesch-Queue nehmen (swipedIds bleibt wie beim normalen Loeschen)
+    func forget(_ ids: Set<String>) {
+        deleteQueueIds.removeAll { ids.contains($0) }
+        if let last = lastSwipedId, ids.contains(last) { lastSwipedId = nil }
+        persist()
+    }
+
     // Nach echtem Löschen oder "Später löschen"
     func clearFromDeleteQueue(_ id: String) {
         deleteQueueIds.removeAll { $0 == id }

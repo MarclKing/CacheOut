@@ -43,6 +43,14 @@ class DeletionStatsStore {
         persist()
     }
 
+    // Komprimierung: nur Platz und Wochenwert, kein Loeschzaehler
+    func recordSavings(bytes: Int64) {
+        guard bytes > 0 else { return }
+        totalDeletedBytes += bytes
+        recordWeeklyBytes(bytes)
+        persist()
+    }
+
     // NEU: Reset aller Statistiken
     func resetAll() {
         totalDeletedCount = 0

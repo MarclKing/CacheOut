@@ -284,7 +284,7 @@ final class CompressionStore {
 
     // MARK: Komprimieren
 
-    func compress(_ selected: [LargeMediaItem], photoService: PhotoLibraryService) async {
+    func compress(_ selected: [LargeMediaItem], photoService: PhotoLibraryService, statsStore: DeletionStatsStore, swipeStore: SwipeStateStore) async {
         guard !isWorking, !selected.isEmpty else { return }
         isWorking = true
         lastMessage = nil
@@ -420,10 +420,12 @@ final class CompressionStore {
         for p in commitList {
             guard let newId = box.newIds[p.originalId] else { continue }
             compressedIds.insert(newId)
+            swipeStore.transferState(from: p.originalId, to: newId)
             savedBytes += max(0, p.originalBytes - p.compressedBytes)
             doneCount += 1
         }
         UserDefaults.standard.set(Array(compressedIds), forKey: Self.compressedIdsKey)
+        statsStore.recordSavings(bytes: savedBytes)
 
         let doneIds = Set(commitList.map { $0.originalId })
         items.removeAll { doneIds.contains($0.id) }
@@ -549,6 +551,8 @@ struct CompressionGalleryView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(CompressionStore.self) private var store
     @Environment(PhotoLibraryService.self) private var photoService
+    @Environment(DeletionStatsStore.self) private var statsStore
+    @Environment(SwipeStateStore.self) private var swipeStore
 
     private nonisolated enum Kind: Hashable, Sendable { case photos, videos }
     private enum SortMode { case largest, shuffled }
@@ -830,7 +834,7 @@ struct CompressionGalleryView: View {
     private func run() {
         let chosen = selectedItems
         selection.removeAll()
-        Task { await store.compress(chosen, photoService: photoService) }
+        Task { await store.compress(chosen, photoService: photoService, statsStore: statsStore, swipeStore: swipeStore) }
     }
 
     private func openPhotosApp() {
