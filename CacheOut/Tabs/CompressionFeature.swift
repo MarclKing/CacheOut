@@ -106,7 +106,9 @@ nonisolated enum CompressionEngine {
         // 2) Komprimieren
         let compressedURL: URL
         if isVideo {
-            compressedURL = try await compressVideo(from: sourceURL, tempDir: tempDir)
+            // Video: nil, wenn kein Preset mindestens 10 % spart
+            guard let videoURL = try await compressVideo(from: sourceURL, originalBytes: originalBytes, tempDir: tempDir) else { return nil }
+            compressedURL = videoURL
         } else {
             let longSide = max(asset.pixelWidth, asset.pixelHeight)
             compressedURL = try compressPhoto(from: sourceURL, longSide: longSide, tempDir: tempDir)
@@ -174,23 +176,36 @@ nonisolated enum CompressionEngine {
     }
 
     @concurrent
-    static func compressVideo(from sourceURL: URL, tempDir: URL) async throws -> URL {
+    static func compressVideo(from sourceURL: URL, originalBytes: Int64, tempDir: URL) async throws -> URL? {
         let asset = AVURLAsset(url: sourceURL)
+        // Nicht exportierbare Videos früh abbrechen
+        guard try await asset.load(.isExportable) else { throw CompressionError.exportFailed }
+
         let presets = [AVAssetExportPresetHEVC1920x1080, AVAssetExportPreset1920x1080, AVAssetExportPreset1280x720]
-        var lastError: Error = CompressionError.exportFailed
+        var lastError: Error?
         for preset in presets {
+            // Nur Presets nehmen, die für dieses Video und .mov wirklich unterstützt sind
+            guard await AVAssetExportSession.compatibility(ofExportPreset: preset, with: asset, outputFileType: .mov) else { continue }
             guard let session = AVAssetExportSession(asset: asset, presetName: preset) else { continue }
             let outURL = tempDir.appendingPathComponent("\(UUID().uuidString).mov")
             do {
                 try await session.export(to: outURL, as: .mov)
-                return outURL
+                let size = fileSize(at: outURL)
+                // Erstes Ergebnis nehmen, das mindestens 10 % kleiner ist
+                if size > 0, Double(size) < Double(originalBytes) * CompressionStore.minimumSavingsFactor {
+                    return outURL
+                }
+                // Zu groß geblieben: nächstes Preset probieren
+                try? FileManager.default.removeItem(at: outURL)
             } catch {
                 print("⚠️ Video-Export mit \(preset) fehlgeschlagen:", error)
                 lastError = error
                 try? FileManager.default.removeItem(at: outURL)
             }
         }
-        throw lastError
+        // Echte Fehler weitergeben, sonst nil = nicht klein genug
+        if let lastError { throw lastError }
+        return nil
     }
 
     static func writeResource(_ resource: PHAssetResource, to url: URL) async throws {
@@ -280,6 +295,11 @@ final class CompressionStore {
         items = result
         isScanning = false
         hasScanned = true
+    }
+
+    // Items entfernen, die in die Löschliste verschoben wurden
+    func removeItems(ids: Set<String>) {
+        items.removeAll { ids.contains($0.id) }
     }
 
     // MARK: Komprimieren
@@ -429,6 +449,8 @@ final class CompressionStore {
 
         let doneIds = Set(commitList.map { $0.originalId })
         items.removeAll { doneIds.contains($0.id) }
+        // Kopien an die Stelle der Originale setzen (Reihenfolge im Stapel)
+        photoService.replaceInShuffleOrder(box.newIds)
         photoService.invalidateLibraryCaches()
 
         let countText = doneCount == 1 ? "1 Datei" : "\(doneCount) Dateien"
@@ -638,6 +660,13 @@ struct CompressionGalleryView: View {
         .hidesTabBar()
         .navigationBarBackButtonHidden(store.isWorking)
         .toolbar {
+            // Auswahl in die Löschliste schicken (statt zu komprimieren)
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Löschen", role: .destructive) {
+                    sendToDeleteQueue()
+                }
+                .disabled(selectedItems.isEmpty || store.isWorking)
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button {
@@ -829,6 +858,18 @@ struct CompressionGalleryView: View {
         for item in store.items { keys[item.id] = Double.random(in: 0...1) }
         shuffleKeys = keys
         sortMode = .shuffled
+    }
+
+    // Markierte Fotos/Videos in die Lösch-Warteschlange legen
+    private func sendToDeleteQueue() {
+        let chosen = selectedItems
+        let ids = Set(chosen.map { $0.id })
+        guard !ids.isEmpty else { return }
+        for item in chosen {
+            swipeStore.markDelete(item.id, isVideo: item.isVideo)   // isVideo für die Statistik/Streaks
+        }
+        selection.removeAll()
+        store.removeItems(ids: ids)
     }
 
     private func run() {

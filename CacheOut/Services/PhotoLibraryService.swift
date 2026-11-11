@@ -9,6 +9,9 @@ class PhotoLibraryService {
     // Bleibt für die Dauer der App-Session stabil, erst bei Neustart neu gemischt
     private var cachedShuffleOrder: [String]?
 
+    // Zähler: wird nach Änderungen an der Mediathek erhöht, damit Ansichten neu laden
+    private(set) var libraryRevision = 0
+
     // Caching-Manager statt PHImageManager.default() — cached bereits angeforderte
     // Bilder intern und macht Prefetching für kommende Swipe-Karten möglich.
     private let imageManager = PHCachingImageManager()
@@ -227,6 +230,7 @@ class PhotoLibraryService {
 
     // MARK: - Shuffled All Assets (stabil für App-Session)
     func shuffledAllAssets() -> [PHAsset] {
+        cacheLock.lock(); defer { cacheLock.unlock() }
         let all = fetchAssets(filter: .all)
 
         if let order = cachedShuffleOrder {
@@ -295,7 +299,15 @@ class PhotoLibraryService {
     }
 
     // NEU: nach Änderungen außerhalb von deleteAssets (z. B. Komprimierung) aufrufen
+    // Komprimierung: Kopie übernimmt die Position des Originals in der Mischreihenfolge
+    func replaceInShuffleOrder(_ mapping: [String: String]) {
+        cacheLock.lock(); defer { cacheLock.unlock() }
+        guard !mapping.isEmpty, let order = cachedShuffleOrder else { return }
+        cachedShuffleOrder = order.map { mapping[$0] ?? $0 }
+    }
+
     func invalidateLibraryCaches() {
+        libraryRevision += 1
         cacheLock.lock(); defer { cacheLock.unlock() }
         dayMonthIndexCache = nil
         monthIndexCache = nil

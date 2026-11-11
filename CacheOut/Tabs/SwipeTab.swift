@@ -36,7 +36,19 @@ struct SwipeTab: View {
             .onAppear {
                 loadAssets()
             }
+            // Nach Komprimierung Stapel neu laden (Kopie behält Position des Originals)
+            .onChange(of: photoService.libraryRevision) { _, _ in
+                reloadAssets()
+            }
         }
+
+    // Stapel neu holen, ohne Ladeanzeige (Deck bleibt bestehen)
+    private func reloadAssets() {
+        Task.detached(priority: .userInitiated) {
+            let loaded = await photoService.shuffledAllAssets()
+            await MainActor.run { assets = loaded }
+        }
+    }
 
     private func loadAssets() {
         guard assets.isEmpty else { return }
